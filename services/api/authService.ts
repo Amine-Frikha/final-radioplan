@@ -4,7 +4,7 @@ import { db } from "./index";
 import { supabase } from "../supabaseClient";
 
 // Helper to check mode
-const USE_SUPABASE = process.env.REACT_APP_USE_SUPABASE === 'true';
+const USE_SUPABASE = true
 
 export const authService = {
     login: async (email: string, password?: string): Promise<Doctor> => {

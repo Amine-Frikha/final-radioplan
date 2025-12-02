@@ -1,5 +1,5 @@
 {
-  "name": "final-radioplan-ai",
+  "name": "backend-radioplan-ai",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -14,7 +14,8 @@
     "react-router-dom": "^7.9.6",
     "react-dom": "^19.2.0",
     "html2canvas": "1.4.1",
-    "jspdf": "2.5.1"
+    "jspdf": "2.5.1",
+    "@supabase/supabase-js": "^2.86.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

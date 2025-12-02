@@ -2,8 +2,9 @@
 import React, { useContext, useState, useMemo } from 'react';
 import { AppContext } from '../App';
 import StatCard from '../components/StatCard';
+import ConflictResolverModal from '../components/ConflictResolverModal';
 import { Users, AlertTriangle, Calendar, Activity, Clock, ChevronLeft, ChevronRight, LayoutList, LayoutGrid, UserX, CalendarDays, UserMinus } from 'lucide-react';
-import { DayOfWeek, Period, SlotType, Doctor } from '../types';
+import { DayOfWeek, Period, SlotType, Doctor, ScheduleSlot, Conflict } from '../types';
 import { getDateForDayOfWeek, isDateInRange, generateScheduleForWeek, detectConflicts } from '../services/scheduleService';
 
 const Dashboard: React.FC = () => {
@@ -16,7 +17,8 @@ const Dashboard: React.FC = () => {
       shiftHistory, 
       rcpAttendance, 
       rcpExceptions, 
-      manualOverrides 
+      manualOverrides,
+      setManualOverrides
   } = useContext(AppContext);
   
   // Local State for Week Navigation (Isolated)
@@ -31,6 +33,10 @@ const Dashboard: React.FC = () => {
 
   const [viewMode, setViewMode] = useState<'DAY' | 'WEEK'>('DAY');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+
+  // Resolver Modal State
+  const [selectedConflict, setSelectedConflict] = useState<Conflict | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<ScheduleSlot | null>(null);
 
   // Generate Local Schedule based on Local Week
   const schedule = useMemo(() => {
@@ -61,8 +67,6 @@ const Dashboard: React.FC = () => {
   }, [currentWeekStart, template, unavailabilities, doctors, activityDefinitions, rcpTypes, shiftHistory, rcpAttendance, rcpExceptions, manualOverrides]);
 
   const conflicts = useMemo(() => {
-     // Re-import detectConflicts logic or rely on context? 
-     // We need to run it on LOCAL schedule
      return detectConflicts(schedule, unavailabilities, doctors, activityDefinitions);
   }, [schedule, unavailabilities, doctors, activityDefinitions]);
 
@@ -127,9 +131,36 @@ const Dashboard: React.FC = () => {
           });
       }
 
-      const activeDocs = new Set(filteredSlots.filter(s => s.assignedDoctorId).map(s => s.assignedDoctorId)).size;
+      // 1. PRESENT DOCTORS CALCULATION
+      // Calculate how many doctors are available (not absent ALL_DAY)
+      let presentDoctorsCount = 0;
+      if (viewMode === 'DAY') {
+          presentDoctorsCount = doctors.filter(d => {
+              const isAbsentAllDay = unavailabilities.some(u => 
+                  u.doctorId === d.id && 
+                  isDateInRange(dateStr, u.startDate, u.endDate) &&
+                  (!u.period || u.period === 'ALL_DAY')
+              );
+              return !isAbsentAllDay;
+          }).length;
+      } else {
+          // In Week view, count doctors who are available for at least part of the week (not absent M-F)
+          const weekStartStr = currentWeekStart.toISOString().split('T')[0];
+          const weekEnd = new Date(currentWeekStart);
+          weekEnd.setDate(weekEnd.getDate() + 4);
+          const weekEndStr = weekEnd.toISOString().split('T')[0];
+
+          presentDoctorsCount = doctors.filter(d => {
+              const absentWholeWeek = unavailabilities.some(u => 
+                  u.doctorId === d.id && 
+                  u.startDate <= weekStartStr && u.endDate >= weekEndStr &&
+                  (!u.period || u.period === 'ALL_DAY')
+              );
+              return !absentWholeWeek;
+          }).length;
+      }
+
       const totalActivities = filteredSlots.filter(s => s.assignedDoctorId).length;
-      
       const totalSlots = filteredSlots.length;
       const filledSlots = filteredSlots.filter(s => s.assignedDoctorId).length;
       const occupancy = totalSlots > 0 ? Math.round((filledSlots / totalSlots) * 100) : 0;
@@ -159,14 +190,44 @@ const Dashboard: React.FC = () => {
       }
 
       return {
-          activeDocs,
+          presentDoctorsCount,
           totalActivities,
           occupancy,
           conflictCount: relevantConflicts.length,
           filteredConflicts: relevantConflicts,
           absentees
       };
-  }, [schedule, viewMode, selectedDate, conflicts, currentWeekStart, unavailabilities]);
+  }, [schedule, viewMode, selectedDate, conflicts, currentWeekStart, unavailabilities, doctors]);
+
+  // --- RESOLUTION HANDLERS ---
+  const handleResolve = (slotId: string, newDoctorId: string) => {
+    const newOverrides = { ...manualOverrides };
+    
+    if (newDoctorId === "") {
+        delete newOverrides[slotId];
+    } else {
+        newOverrides[slotId] = newDoctorId;
+    }
+    setManualOverrides(newOverrides);
+    
+    // Auto-close modal after resolution
+    setSelectedConflict(null);
+    setSelectedSlot(null);
+  };
+
+  const handleCloseSlot = (slotId: string) => {
+    setManualOverrides({ ...manualOverrides, [slotId]: '__CLOSED__' });
+    setSelectedConflict(null);
+    setSelectedSlot(null);
+  }
+
+  const handleAlertClick = (conflict: Conflict) => {
+      const slot = schedule.find(s => s.id === conflict.slotId);
+      if (slot) {
+          setSelectedSlot(slot);
+          setSelectedConflict(conflict);
+      }
+  }
 
 
   // --- RENDER HELPERS ---
@@ -182,23 +243,31 @@ const Dashboard: React.FC = () => {
               {slots.length === 0 ? <p className="text-sm text-slate-400 italic">Aucune activité prévue.</p> : 
                slots.map(s => {
                    const doc = doctors.find(d => d.id === s.assignedDoctorId);
+                   const isRcpUnconfirmed = s.type === SlotType.RCP && s.isUnconfirmed;
+                   
                    return (
                        <div key={s.id} className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-200">
                            <div className="flex items-center">
-                               <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${doc ? doc.color : 'bg-slate-200 text-slate-400'}`}>
-                                   {doc ? doc.name.substring(0,2) : '?'}
-                               </div>
-                               <div>
-                                   <div className="text-sm font-bold text-slate-700 flex items-center">
-                                       {doc ? doc.name : 'Non assigné'}
-                                       {s.isUnconfirmed && (
-                                            <span className="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded border border-yellow-200 flex items-center">
-                                                ⚠️ (À confirmer)
-                                            </span>
-                                       )}
+                               {isRcpUnconfirmed ? (
+                                   <div className="flex flex-col">
+                                       <span className="text-[10px] text-yellow-700 bg-yellow-100 px-1 rounded font-bold mb-1 w-fit">⚠️ À confirmer</span>
+                                       <div className="text-xs text-slate-600">
+                                            {[s.assignedDoctorId, ...(s.secondaryDoctorIds || [])].map(id => doctors.find(d => d.id === id)?.name).filter(Boolean).join(', ')}
+                                       </div>
                                    </div>
-                                   <div className="text-xs text-slate-500">{s.type} {s.subType && `• ${s.subType}`}</div>
-                               </div>
+                               ) : (
+                                   <>
+                                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${doc ? doc.color : 'bg-slate-200 text-slate-400'}`}>
+                                        {doc ? doc.name.substring(0,2) : '?'}
+                                    </div>
+                                    <div>
+                                        <div className="text-sm font-bold text-slate-700 flex items-center">
+                                            {doc ? doc.name : 'Non assigné'}
+                                        </div>
+                                        <div className="text-xs text-slate-500">{s.type} {s.subType && `• ${s.subType}`}</div>
+                                    </div>
+                                   </>
+                               )}
                            </div>
                            <div className="text-xs font-bold bg-white px-2 py-1 rounded border border-slate-200 text-slate-600">
                                {s.location}
@@ -278,12 +347,34 @@ const Dashboard: React.FC = () => {
                                       <div className="space-y-1">
                                           {rcps.map(rcp => {
                                               const rcpDoc = doctors.find(d => d.id === rcp.assignedDoctorId);
+                                              
+                                              if (rcp.isUnconfirmed) {
+                                                  // Show All eligible names
+                                                  const allNames = [rcp.assignedDoctorId, ...(rcp.secondaryDoctorIds || [])]
+                                                        .map(id => doctors.find(d => d.id === id)?.name)
+                                                        .filter(Boolean);
+                                                  
+                                                  return (
+                                                      <div key={rcp.id} className="flex flex-col bg-yellow-50 p-1 rounded border border-yellow-100">
+                                                           <div className="flex justify-between items-center mb-1">
+                                                                <span className="text-[8px] text-purple-700 font-bold truncate max-w-[50px]">{rcp.location}</span>
+                                                                <span className="text-[8px] text-yellow-700 font-bold">⚠️ À confirmer</span>
+                                                           </div>
+                                                           <div className="flex flex-wrap gap-0.5">
+                                                                {allNames.map(name => (
+                                                                    <span key={name} className="text-[7px] bg-white border px-1 rounded text-slate-600">{name}</span>
+                                                                ))}
+                                                           </div>
+                                                      </div>
+                                                  )
+                                              }
+
                                               return (
                                                   <div key={rcp.id} className="flex justify-between items-center bg-purple-50 p-1 rounded border border-purple-100">
                                                       <span className="text-[8px] text-purple-700 font-bold truncate max-w-[50px]">{rcp.location}</span>
                                                       <div className="flex items-center">
                                                           <span className="text-[8px] text-slate-700 font-medium truncate max-w-[60px]">{rcpDoc?.name || '-'}</span>
-                                                          {rcp.isUnconfirmed && <span className="ml-1 text-[8px]" title="À confirmer">⚠️</span>}
+                                                          <span className="ml-1 text-[8px] text-green-600">✓</span>
                                                       </div>
                                                   </div>
                                               )
@@ -402,11 +493,11 @@ const Dashboard: React.FC = () => {
       {/* Dynamic Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          title={viewMode === 'DAY' ? "Médecins (Aujourd'hui)" : "Médecins (Semaine)"}
-          value={stats.activeDocs}
+          title={viewMode === 'DAY' ? "Médecins Présents" : "Effectif Dispo (Semaine)"}
+          value={stats.presentDoctorsCount}
           icon={Users}
           color="bg-blue-500"
-          description={`Sur ${doctors.length} effectifs`}
+          description={`Disponibles sur ${doctors.length} effectifs`}
         />
         <StatCard
           title={viewMode === 'DAY' ? "Conflits (Jour)" : "Conflits (Semaine)"}
@@ -438,12 +529,15 @@ const Dashboard: React.FC = () => {
             {/* ALERTES */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col shrink-0">
                 <div className="p-4 border-b border-slate-100 bg-red-50/50">
-                    <h2 className="font-bold text-slate-800 flex items-center">
-                    <AlertTriangle className="w-5 h-5 mr-2 text-red-500" />
-                    Alertes {viewMode === 'DAY' ? 'du jour' : 'de la semaine'}
+                    <h2 className="font-bold text-slate-800 flex items-center justify-between">
+                        <span className="flex items-center">
+                            <AlertTriangle className="w-5 h-5 mr-2 text-red-500" />
+                            Alertes {viewMode === 'DAY' ? 'du jour' : 'de la semaine'}
+                        </span>
+                        <span className="text-xs bg-red-200 text-red-800 px-2 py-0.5 rounded-full">{stats.filteredConflicts.length}</span>
                     </h2>
                 </div>
-                <div className="p-4 max-h-40 overflow-y-auto space-y-3">
+                <div className="p-4 max-h-80 overflow-y-auto space-y-3">
                     {stats.filteredConflicts.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-20 text-slate-400">
                         <span className="text-sm">Aucun conflit détecté.</span>
@@ -459,9 +553,13 @@ const Dashboard: React.FC = () => {
                         }
 
                         return (
-                        <div key={conflict.id} className="p-3 bg-white border border-red-100 rounded-lg shadow-sm hover:border-red-300 transition-colors">
+                        <div 
+                            key={conflict.id} 
+                            onClick={() => handleAlertClick(conflict)}
+                            className="p-3 bg-white border border-red-100 rounded-lg shadow-sm hover:border-red-300 hover:shadow-md transition-all cursor-pointer relative group"
+                        >
                             <div className="flex justify-between items-start mb-1">
-                                <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full border border-red-100">
+                                <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full border border-red-100 uppercase">
                                     {conflict.type === 'DOUBLE_BOOKING' ? 'Double Réservation' : 'Indisponibilité'}
                                 </span>
                                 <span className="text-[10px] text-slate-400 font-mono">
@@ -482,6 +580,11 @@ const Dashboard: React.FC = () => {
                                     </span>
                                 </div>
                             )}
+                            
+                            <div className="absolute inset-0 bg-blue-500/0 group-hover:bg-blue-500/5 rounded-lg transition-colors pointer-events-none" />
+                            <div className="absolute right-2 bottom-2 text-xs text-blue-600 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
+                                Résoudre →
+                            </div>
                         </div>
                         );
                     })
@@ -575,6 +678,19 @@ const Dashboard: React.FC = () => {
            {viewMode === 'DAY' ? renderDayView() : renderWeekView()}
         </div>
       </div>
+
+      {selectedSlot && (
+          <ConflictResolverModal
+            slot={selectedSlot}
+            conflict={selectedConflict || undefined}
+            doctors={doctors}
+            slots={schedule}
+            unavailabilities={unavailabilities}
+            onClose={() => { setSelectedSlot(null); setSelectedConflict(null); }}
+            onResolve={handleResolve}
+            onCloseSlot={handleCloseSlot}
+          />
+      )}
     </div>
   );
 };

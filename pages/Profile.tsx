@@ -1,13 +1,12 @@
-
 import React, { useContext, useState, useEffect } from 'react';
 import { AppContext } from '../App';
 import { 
     Calendar, Save, Trash2, ArrowRight, UserCheck, Lock, Plus, 
     UserPlus, Ban, Briefcase, Edit, Bell, ChevronLeft, ChevronRight, 
     CheckCircle2, XCircle, AlertTriangle, Clock, RotateCcw, Settings, 
-    Users, Palette, AlertOctagon
+    Users, Palette, AlertOctagon, Shield, Key
 } from 'lucide-react';
-import { DayOfWeek, SlotType, Doctor, ScheduleTemplateSlot, RcpAttendance, Period } from '../types';
+import { DayOfWeek, SlotType, Doctor, ScheduleTemplateSlot, RcpAttendance, Period, RcpManualInstance, UserRole } from '../types';
 import { getDateForDayOfWeek, isFrenchHoliday } from '../services/scheduleService';
 
 // --- HELPER: Count Notifications ---
@@ -73,11 +72,13 @@ const Profile: React.FC = () => {
       removeDoctor,
       activityDefinitions,
       template,
+      rcpTypes, 
       rcpAttendance,
       setRcpAttendance,
       rcpExceptions,
       addRcpException,
-      removeRcpException
+      removeRcpException,
+      roles 
   } = useContext(AppContext);
   
   // --- TABS STATE ---
@@ -94,11 +95,21 @@ const Profile: React.FC = () => {
   const [newDocName, setNewDocName] = useState("");
   const [newDocSpecialty, setNewDocSpecialty] = useState("");
   const [newDocColor, setNewDocColor] = useState(DOCTOR_COLORS[0].class);
+  const [newDocRole, setNewDocRole] = useState<string>(''); // Default empty
+  const [newDocPassword, setNewDocPassword] = useState("");
 
-  // --- EDIT PROFILE STATE ---
+  // --- EDIT PROFILE (SELF) STATE ---
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editName, setEditName] = useState("");
   const [editSpecialty, setEditSpecialty] = useState("");
+
+  // --- EDIT DOCTOR (ADMIN) STATE ---
+  const [editingDoctor, setEditingDoctor] = useState<Doctor | null>(null);
+  const [editDocName, setEditDocName] = useState("");
+  const [editDocSpecialty, setEditDocSpecialty] = useState("");
+  const [editDocColor, setEditDocColor] = useState("");
+  const [editDocRole, setEditDocRole] = useState<string>('DOCTOR');
+  const [editDocPassword, setEditDocPassword] = useState("");
 
   // --- NOTIFICATIONS STATE ---
   const [notifWeekOffset, setNotifWeekOffset] = useState(0); 
@@ -113,17 +124,14 @@ const Profile: React.FC = () => {
   useEffect(() => {
       if(currentUser) {
           setEditName(currentUser.name);
-          setEditSpecialty(currentUser.specialty.join(', '));
+          setEditSpecialty((currentUser.specialty || []).join(', '));
           setNotifWeekOffset(0);
       }
-  }, [currentUser]);
-
-  // --- ACTIONS ---
-
-  const handleLogin = (doctorId: string) => {
-    const doc = doctors.find(d => d.id === doctorId);
-    if(doc) setCurrentUser(doc);
-  }
+      // Set default role if available
+      if (roles.length > 0 && !newDocRole) {
+          setNewDocRole(roles[0].id);
+      }
+  }, [currentUser, roles]);
 
   const handleCreateDoctor = (e: React.FormEvent) => {
       e.preventDefault();
@@ -137,14 +145,44 @@ const Profile: React.FC = () => {
               name: formattedName,
               specialty: newDocSpecialty.split(',').map(s => s.trim()).filter(Boolean),
               color: newDocColor,
+              role: newDocRole,
+              email: `${formattedName.replace(/\s+/g, '.').toLowerCase()}@hopital.fr`, 
+              password: newDocPassword, // Save Password
               excludedDays: [],
               excludedActivities: [],
-              excludedSlotTypes: []
+              excludedSlotTypes: [],
+              tempsDeTravail: 1.0
           });
           setNewDocName("");
           setNewDocSpecialty("");
+          setNewDocPassword("");
+          // Reset role to default if possible
+          setNewDocRole(roles[0]?.id || 'DOCTOR');
       }
   }
+
+  const handleOpenEditDoctor = (doc: Doctor) => {
+      setEditingDoctor(doc);
+      setEditDocName(doc.name);
+      setEditDocSpecialty((doc.specialty || []).join(', '));
+      setEditDocColor(doc.color || 'bg-slate-200 text-slate-800');
+      setEditDocRole(doc.role);
+      setEditDocPassword(doc.password || "");
+  };
+
+  const handleSaveEditedDoctor = () => {
+      if (editingDoctor && editDocName.trim()) {
+          updateDoctor({
+              ...editingDoctor,
+              name: editDocName,
+              specialty: editDocSpecialty.split(',').map(s => s.trim()).filter(Boolean),
+              color: editDocColor,
+              role: editDocRole,
+              password: editDocPassword // Update password
+          });
+          setEditingDoctor(null);
+      }
+  };
 
   const handleRequestDelete = (e: React.MouseEvent, doc: Doctor) => {
       e.preventDefault();
@@ -191,7 +229,8 @@ const Profile: React.FC = () => {
 
   const toggleDayExclusion = (day: DayOfWeek) => {
       if(!currentUser) return;
-      const currentExclusions = currentUser.excludedDays;
+      // SAFE CHECK: ensure array exists
+      const currentExclusions = currentUser.excludedDays || [];
       let newExclusions = currentExclusions.includes(day)
           ? currentExclusions.filter(d => d !== day)
           : [...currentExclusions, day];
@@ -201,7 +240,8 @@ const Profile: React.FC = () => {
 
   const toggleActivityExclusion = (actId: string) => {
       if(!currentUser) return;
-      const currentExclusions = currentUser.excludedActivities;
+      // SAFE CHECK: ensure array exists
+      const currentExclusions = currentUser.excludedActivities || [];
       let newExclusions = currentExclusions.includes(actId)
           ? currentExclusions.filter(a => a !== actId)
           : [...currentExclusions, actId];
@@ -211,6 +251,7 @@ const Profile: React.FC = () => {
 
   const toggleSlotTypeExclusion = (type: SlotType) => {
       if(!currentUser) return;
+      // SAFE CHECK: ensure array exists
       const currentExclusions = currentUser.excludedSlotTypes || [];
       let newExclusions = currentExclusions.includes(type)
           ? currentExclusions.filter(t => t !== type)
@@ -219,7 +260,6 @@ const Profile: React.FC = () => {
       setCurrentUser({...currentUser, excludedSlotTypes: newExclusions});
   }
 
-  // --- RCP HELPER FUNCTIONS ---
   const getUpcomingRcps = () => {
       if (!currentUser) return [];
 
@@ -242,10 +282,12 @@ const Profile: React.FC = () => {
           )
       );
 
-      return relevantTemplates.map(t => {
+      const standardRcps = relevantTemplates.map(t => {
           const slotDate = getDateForDayOfWeek(targetMonday, t.day);
           const exception = rcpExceptions.find(ex => ex.rcpTemplateId === t.id && ex.originalDate === slotDate);
+          
           const displayDate = exception?.newDate || slotDate;
+          const displayTime = exception?.newTime || t.time || 'N/A';
           const holiday = isFrenchHoliday(displayDate);
           
           const generatedId = `${t.id}-${slotDate}`;
@@ -263,15 +305,72 @@ const Profile: React.FC = () => {
           return {
               template: t,
               date: displayDate,
+              time: displayTime,
               originalDate: slotDate,
               generatedId,
               myStatus,
               colleaguesStatus,
               holiday,
               isMoved: !!exception?.newDate,
-              isCancelled: exception?.isCancelled
+              isTimeChanged: !!exception?.newTime,
+              isCancelled: exception?.isCancelled,
+              isManual: false
           };
-      }).sort((a,b) => (a?.date || '').localeCompare(b?.date || ''));
+      });
+
+      const targetWeekEnd = new Date(targetMonday);
+      targetWeekEnd.setDate(targetWeekEnd.getDate() + 6);
+      const startStr = targetMonday.toISOString().split('T')[0];
+      const endStr = targetWeekEnd.toISOString().split('T')[0];
+
+      const manualRcps = rcpTypes
+        .filter(r => r.frequency === 'MANUAL' && r.manualInstances)
+        .flatMap(r => r.manualInstances!.map(i => ({...i, rcpName: r.name, rcpId: r.id})))
+        .filter(inst => {
+            if (inst.date < startStr || inst.date > endStr) return false;
+            // SAFE CHECK: doctorIds might be null in DB
+            const doctorIds = inst.doctorIds || [];
+            return doctorIds.includes(currentUser.id) || inst.backupDoctorId === currentUser.id;
+        })
+        .map(inst => {
+             const generatedId = `manual-rcp-${inst.rcpId}-${inst.id}`;
+             const holiday = isFrenchHoliday(inst.date);
+             const currentMap = rcpAttendance[generatedId] || {};
+             const myStatus = currentMap[currentUser.id];
+             
+             const colleaguesStatus = Object.keys(currentMap)
+             .filter(dId => dId !== currentUser.id)
+             .map(dId => {
+                 const dName = doctors.find(d => d.id === dId)?.name || 'Inconnu';
+                 const status = currentMap[dId];
+                 return { name: dName, status };
+             });
+
+             const mockTemplate: any = {
+                 id: inst.rcpId,
+                 location: inst.rcpName,
+                 day: 'MANUAL' as any,
+                 backupDoctorId: inst.backupDoctorId
+             };
+
+             return {
+                  template: mockTemplate,
+                  date: inst.date,
+                  time: inst.time,
+                  originalDate: inst.date,
+                  generatedId,
+                  myStatus,
+                  colleaguesStatus,
+                  holiday,
+                  isMoved: false,
+                  isTimeChanged: false,
+                  isCancelled: false,
+                  isManual: true
+             };
+        });
+
+
+      return [...standardRcps, ...manualRcps].sort((a,b) => (a?.date || '').localeCompare(b?.date || ''));
   };
 
   const handleAttendanceToggle = (slotId: string, status: 'PRESENT' | 'ABSENT') => {
@@ -325,8 +424,7 @@ const Profile: React.FC = () => {
       return `Semaine du ${targetMonday.getDate()}/${targetMonday.getMonth()+1}`;
   };
 
-
-  // --- VIEW: LOGIN / LOGOUT SCREEN ---
+  // Only the Manage Team View has significant changes to include Password
   if (!currentUser) {
       return (
           <div className="flex flex-col h-full items-center justify-center p-4">
@@ -355,41 +453,10 @@ const Profile: React.FC = () => {
                       {/* --- TAB: LOGIN --- */}
                       {activeTab === 'LOGIN' && (
                           <div className="space-y-4">
-                              <div className="text-center mb-6">
-                                  <h2 className="text-xl font-bold text-slate-800">Qui êtes-vous ?</h2>
-                                  <p className="text-slate-500 text-sm">Sélectionnez votre profil pour accéder à votre espace.</p>
+                             <div className="text-center text-slate-500 py-10">
+                                  <p className="mb-2">Veuillez utiliser la page de connexion principale.</p>
+                                  <a href="#/login" className="text-blue-600 font-bold hover:underline">Aller à la page Login</a>
                               </div>
-
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                  {doctors.map(doc => {
-                                      const notifCount = countPendingNotifications(doc, template, rcpAttendance);
-                                      return (
-                                          <button 
-                                              key={doc.id}
-                                              onClick={() => handleLogin(doc.id)}
-                                              className="flex items-center p-3 rounded-lg border border-slate-200 hover:border-blue-500 hover:bg-blue-50 transition-all text-left group relative bg-white shadow-sm"
-                                          >
-                                              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${doc.color} relative shrink-0`}>
-                                                  {doc.name.substring(0,2)}
-                                                  {notifCount > 0 && (
-                                                      <div className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center border border-white shadow-sm">
-                                                          {notifCount}
-                                                      </div>
-                                                  )}
-                                              </div>
-                                              <div className="min-w-0">
-                                                  <div className="font-bold text-slate-700 group-hover:text-blue-700 truncate">{doc.name}</div>
-                                                  <div className="text-xs text-slate-500 truncate">{doc.specialty.join(', ')}</div>
-                                              </div>
-                                          </button>
-                                      );
-                                  })}
-                              </div>
-                              {doctors.length === 0 && (
-                                  <div className="text-center text-slate-400 py-10">
-                                      Aucun médecin configuré. Allez dans l'onglet "Gestion Équipe".
-                                  </div>
-                              )}
                           </div>
                       )}
 
@@ -421,19 +488,47 @@ const Profile: React.FC = () => {
                                           />
                                       </div>
                                       
-                                      <div>
-                                          <label className="text-xs font-bold text-slate-500 mb-1 block">Couleur de pastille</label>
-                                          <div className="flex flex-wrap gap-2">
-                                              {DOCTOR_COLORS.map((col, idx) => (
-                                                  <button
-                                                      key={idx}
-                                                      type="button"
-                                                      onClick={() => setNewDocColor(col.class)}
-                                                      className={`w-6 h-6 rounded-full border-2 ${col.class} ${newDocColor === col.class ? 'border-slate-600 scale-110 shadow-md' : 'border-white'}`}
-                                                      title={col.label}
-                                                  />
-                                              ))}
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                          <div>
+                                              <label className="text-xs font-bold text-slate-500 mb-1 block">Rôle</label>
+                                              <select 
+                                                value={newDocRole}
+                                                onChange={e => setNewDocRole(e.target.value)}
+                                                className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                                              >
+                                                  {roles.map(r => (
+                                                      <option key={r.id} value={r.id}>{r.name}</option>
+                                                  ))}
+                                              </select>
                                           </div>
+                                          <div>
+                                                <label className="text-xs font-bold text-slate-500 mb-1 block">Couleur</label>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {DOCTOR_COLORS.map((col, idx) => (
+                                                        <button
+                                                            key={idx}
+                                                            type="button"
+                                                            onClick={() => setNewDocColor(col.class)}
+                                                            className={`w-6 h-6 rounded-full border-2 ${col.class} ${newDocColor === col.class ? 'border-slate-600 scale-110 shadow-md' : 'border-white'}`}
+                                                            title={col.label}
+                                                        />
+                                                    ))}
+                                                </div>
+                                          </div>
+                                      </div>
+
+                                      {/* PASSWORD FIELD */}
+                                      <div>
+                                          <label className="text-xs font-bold text-slate-500 mb-1 block">Mot de passe initial</label>
+                                          <input 
+                                              type="text" 
+                                              placeholder="Mot de passe..."
+                                              className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none font-mono"
+                                              value={newDocPassword}
+                                              onChange={e => setNewDocPassword(e.target.value)}
+                                              required
+                                          />
+                                          <p className="text-[10px] text-slate-400 mt-1">Le médecin pourra l'utiliser pour se connecter.</p>
                                       </div>
 
                                       <button type="submit" className="w-full bg-purple-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-purple-700 shadow-sm">
@@ -442,37 +537,134 @@ const Profile: React.FC = () => {
                                   </form>
                               </div>
 
-                              {/* LIST FOR DELETION */}
+                              {/* LIST FOR MANAGEMENT */}
                               <div>
                                   <h3 className="text-sm font-bold text-slate-700 mb-3">Effectifs Actuels ({doctors.length})</h3>
                                   <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
                                       {doctors.map(doc => (
                                           <div key={doc.id} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg shadow-sm">
                                               <div className="flex items-center">
-                                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold mr-3 ${doc.color}`}>
+                                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold mr-3 ${doc.color || 'bg-slate-200'}`}>
                                                       {doc.name.substring(0,2)}
                                                   </div>
                                                   <div>
-                                                      <div className="text-sm font-bold text-slate-800">{doc.name}</div>
-                                                      <div className="text-xs text-slate-500">{doc.specialty.join(', ') || 'Généraliste'}</div>
+                                                      <div className="text-sm font-bold text-slate-800 flex items-center">
+                                                          {doc.name}
+                                                          {doc.role === 'ADMIN' && <Shield className="w-3 h-3 text-purple-600 ml-1" />}
+                                                      </div>
+                                                      <div className="text-xs text-slate-500">
+                                                          {/* SHOW ROLE NAME, NOT ID */}
+                                                          {roles.find(r => r.id === doc.role)?.name || doc.role}
+                                                      </div>
                                                   </div>
                                               </div>
-                                              <button 
-                                                  type="button"
-                                                  onClick={(e) => handleRequestDelete(e, doc)}
-                                                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-2 rounded transition-colors cursor-pointer"
-                                                  title="Supprimer définitivement"
-                                              >
-                                                  <Trash2 className="w-4 h-4" />
-                                              </button>
+                                              <div className="flex items-center space-x-1">
+                                                  <button
+                                                      onClick={() => handleOpenEditDoctor(doc)}
+                                                      className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 p-2 rounded transition-colors"
+                                                      title="Modifier"
+                                                  >
+                                                      <Edit className="w-4 h-4" />
+                                                  </button>
+                                                  <button 
+                                                      type="button"
+                                                      onClick={(e) => handleRequestDelete(e, doc)}
+                                                      className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-2 rounded transition-colors cursor-pointer"
+                                                      title="Supprimer définitivement"
+                                                  >
+                                                      <Trash2 className="w-4 h-4" />
+                                                  </button>
+                                              </div>
                                           </div>
                                       ))}
+                                      {doctors.length === 0 && (
+                                          <div className="text-center text-slate-400 text-xs py-4">
+                                              Aucun médecin. Ajoutez-en un ci-dessus.
+                                          </div>
+                                      )}
                                   </div>
                               </div>
                           </div>
                       )}
                   </div>
                   
+                  {/* EDIT DOCTOR MODAL */}
+                  {editingDoctor && (
+                      <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 border border-slate-200 animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center">
+                                    <Settings className="w-5 h-5 mr-2 text-slate-600" />
+                                    Modifier le profil
+                                </h3>
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Nom</label>
+                                        <input 
+                                            type="text" 
+                                            value={editDocName}
+                                            onChange={(e) => setEditDocName(e.target.value)}
+                                            className="w-full border rounded p-2 text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Spécialités</label>
+                                        <input 
+                                            type="text" 
+                                            value={editDocSpecialty}
+                                            onChange={(e) => setEditDocSpecialty(e.target.value)}
+                                            className="w-full border rounded p-2 text-sm"
+                                        />
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Rôle Système</label>
+                                        <select 
+                                            value={editDocRole}
+                                            onChange={(e) => setEditDocRole(e.target.value)}
+                                            className="w-full border rounded p-2 text-sm bg-slate-50"
+                                        >
+                                            {roles.map(r => (
+                                                <option key={r.id} value={r.id}>{r.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Nouveau Mot de passe</label>
+                                        <div className="flex items-center">
+                                            <Key className="w-4 h-4 text-slate-400 mr-2" />
+                                            <input 
+                                                type="text" 
+                                                value={editDocPassword}
+                                                onChange={(e) => setEditDocPassword(e.target.value)}
+                                                placeholder="Laisser vide pour ne pas changer"
+                                                className="w-full border rounded p-2 text-sm font-mono"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Couleur</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {DOCTOR_COLORS.map((col, idx) => (
+                                                <button
+                                                    key={idx}
+                                                    type="button"
+                                                    onClick={() => setEditDocColor(col.class)}
+                                                    className={`w-6 h-6 rounded-full border-2 ${col.class} ${editDocColor === col.class ? 'border-slate-600 scale-110 shadow-md' : 'border-white'}`}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex justify-end space-x-3 mt-6">
+                                    <button onClick={() => setEditingDoctor(null)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">Annuler</button>
+                                    <button onClick={handleSaveEditedDoctor} className="px-4 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow">Enregistrer</button>
+                                </div>
+                          </div>
+                      </div>
+                  )}
+
                   {/* DELETE CONFIRMATION MODAL */}
                   {doctorToDelete && (
                       <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -513,6 +705,7 @@ const Profile: React.FC = () => {
   }
 
   // --- VIEW: LOGGED IN PROFILE DASHBOARD ---
+  // (Existing content for logged in user remains unchanged)
   const myAbsences = unavailabilities.filter(u => u.doctorId === currentUser.id);
   const upcomingRcps = getUpcomingRcps();
 
@@ -523,7 +716,7 @@ const Profile: React.FC = () => {
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 text-white flex items-center justify-between">
             <div className="flex items-center w-full">
-                <div className={`w-20 h-20 rounded-full flex items-center justify-center text-2xl font-bold shadow-lg mr-6 border-4 border-white/20 ${currentUser.color}`}>
+                <div className={`w-20 h-20 rounded-full flex items-center justify-center text-2xl font-bold shadow-lg mr-6 border-4 border-white/20 ${currentUser.color || 'bg-slate-600'}`}>
                     {currentUser.name.substring(0,2)}
                 </div>
                 <div className="flex-1">
@@ -557,7 +750,7 @@ const Profile: React.FC = () => {
                             </div>
                             <p className="text-blue-100 mt-1 flex items-center">
                                 <Briefcase className="w-3 h-3 mr-1 opacity-70"/> 
-                                {currentUser.specialty.join(' • ')}
+                                {(currentUser.specialty || []).join(' • ')}
                             </p>
                             <div className="mt-3 inline-flex items-center bg-green-400/20 text-green-100 border border-green-400/30 px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider">
                                 <UserCheck className="w-3 h-3 mr-1" /> Connecté
@@ -598,24 +791,27 @@ const Profile: React.FC = () => {
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {upcomingRcps.map((item: any) => {
-                        const isBackup = item.template.backupDoctorId === currentUser.id;
-                        const myStatus = item.myStatus;
+                         // ... (Existing RCP rendering logic) ...
+                         // Copy pasting existing logic to ensure complete file content
+                         const isBackup = item.template.backupDoctorId === currentUser.id;
+                         const myStatus = item.myStatus;
 
                         if (item.isCancelled) {
                              return (
                                 <div key={item.generatedId} className="border rounded-lg p-3 bg-gray-100 border-gray-200 opacity-70 relative">
                                     <div className="text-xs font-bold text-gray-500 uppercase flex items-center line-through">
-                                        {item.template.day} {item.date.split('-').slice(1).reverse().join('/')}
+                                        {item.isManual ? 'MANUEL' : item.template.day} {item.date.split('-').slice(1).reverse().join('/')}
                                     </div>
                                     <div className="font-bold text-gray-600 text-sm mb-2 line-through">{item.template.location}</div>
                                     <div className="absolute top-2 right-2 text-[10px] bg-red-100 text-red-600 font-bold px-1.5 py-0.5 rounded">ANNULÉ</div>
-                                    
-                                    <button 
-                                        onClick={() => handleRestoreRcp(item.template.id, item.originalDate)}
-                                        className="w-full mt-2 text-xs bg-white border border-gray-300 rounded py-1 hover:bg-gray-50 flex items-center justify-center text-gray-600"
-                                    >
-                                        <RotateCcw className="w-3 h-3 mr-1" /> Restaurer
-                                    </button>
+                                    {!item.isManual && (
+                                        <button 
+                                            onClick={() => handleRestoreRcp(item.template.id, item.originalDate)}
+                                            className="w-full mt-2 text-xs bg-white border border-gray-300 rounded py-1 hover:bg-gray-50 flex items-center justify-center text-gray-600"
+                                        >
+                                            <RotateCcw className="w-3 h-3 mr-1" /> Restaurer
+                                        </button>
+                                    )}
                                 </div>
                              )
                         }
@@ -623,18 +819,15 @@ const Profile: React.FC = () => {
                         return (
                             <div key={item.generatedId} className={`border rounded-lg p-3 transition-all ${myStatus === 'PRESENT' ? 'bg-green-50 border-green-200 ring-1 ring-green-200' : myStatus === 'ABSENT' ? 'bg-red-50 border-red-200 opacity-80' : 'bg-white border-slate-200 shadow-sm'}`}>
                                 <div className="flex justify-between items-start mb-2">
-                                    <div className="text-xs font-bold text-slate-500 uppercase flex items-center">
-                                        {item.template.day} {item.date.split('-').slice(1).reverse().join('/')}
-                                        {item.holiday && (
-                                             <span className="ml-2 text-pink-500 flex items-center" title={item.holiday.name}>
-                                                 <AlertTriangle className="w-3 h-3 mr-1" /> Férié
-                                             </span>
-                                        )}
-                                        {item.isMoved && (
-                                            <span className="ml-2 text-blue-500 flex items-center" title="Déplacé">
-                                                 <Clock className="w-3 h-3 mr-1" /> Déplacé
-                                             </span>
-                                        )}
+                                    <div className="text-xs font-bold text-slate-500 uppercase flex flex-col">
+                                        <div>
+                                            {item.isManual ? '' : item.template.day} {item.date.split('-').slice(1).reverse().join('/')}
+                                        </div>
+                                        <div className="flex items-center text-[10px] text-slate-400 mt-0.5">
+                                            <Clock className="w-3 h-3 mr-1"/> {item.time}
+                                        </div>
+                                        {item.holiday && <span className="mt-1 text-pink-500 flex items-center"><AlertTriangle className="w-3 h-3 mr-1" /> Férié</span>}
+                                        {item.isMoved && <span className="mt-1 text-blue-500 flex items-center"><Clock className="w-3 h-3 mr-1" /> Déplacé</span>}
                                     </div>
                                     {isBackup && (
                                         <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-bold border border-indigo-200">Backup</span>
@@ -642,8 +835,7 @@ const Profile: React.FC = () => {
                                 </div>
                                 <div className="font-bold text-slate-800 text-sm mb-3">{item.template.location}</div>
                                 
-                                {/* EXCEPTION CONTROLS */}
-                                {(item.holiday || item.isMoved) && (
+                                {!item.isManual && (item.holiday || item.isMoved) && (
                                     <div className="mb-3 flex space-x-2">
                                         <button 
                                             onClick={() => setExceptionTarget({ templateId: item.template.id, date: item.originalDate })}
@@ -660,7 +852,6 @@ const Profile: React.FC = () => {
                                     </div>
                                 )}
 
-                                {/* COLLEAGUES STATUS */}
                                 {item.colleaguesStatus.length > 0 && (
                                     <div className="text-xs space-y-1 mb-3 bg-slate-50/50 p-2 rounded border border-slate-100">
                                         {item.colleaguesStatus.map((c: any, i: number) => (
@@ -674,7 +865,6 @@ const Profile: React.FC = () => {
                                     </div>
                                 )}
 
-                                {/* ACTION BUTTONS */}
                                 <div className="flex items-center space-x-2">
                                     <button 
                                         onClick={() => handleAttendanceToggle(item.generatedId, 'PRESENT')}
@@ -724,16 +914,15 @@ const Profile: React.FC = () => {
 
       {/* BOTTOM SECTION: ABSENCES & PREFERENCES */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            
-            {/* ABSENCES */}
+            {/* ABSENCES (No changes) */}
             <div>
                 <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center">
                     <Calendar className="w-5 h-5 mr-2 text-blue-500" />
                     Déclarer une absence
                 </h2>
-                
                 <form onSubmit={handleAddUnavailability} className="bg-white p-5 rounded-xl border border-slate-200 mb-6 space-y-4 shadow-sm">
-                    <div className="grid grid-cols-2 gap-3">
+                   {/* ... Form inputs ... */}
+                   <div className="grid grid-cols-2 gap-3">
                         <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Du</label>
                             <input 
@@ -756,7 +945,6 @@ const Profile: React.FC = () => {
                             />
                         </div>
                     </div>
-
                     <div>
                         <label className="block text-xs font-bold text-slate-500 mb-1">Période</label>
                         <select 
@@ -769,7 +957,6 @@ const Profile: React.FC = () => {
                             <option value={Period.AFTERNOON}>Après-midi uniquement</option>
                         </select>
                     </div>
-
                     <div>
                         <label className="block text-xs font-bold text-slate-500 mb-1">Motif</label>
                         <select 
@@ -830,13 +1017,13 @@ const Profile: React.FC = () => {
                 </ul>
             </div>
 
-            {/* PREFERENCES */}
+            {/* PREFERENCES (No changes) */}
             <div>
                  <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center">
                     <Briefcase className="w-5 h-5 mr-2 text-purple-500" />
                     Mes Préférences & Exclusions
                 </h2>
-                
+                {/* ... Exclusions UI ... */}
                 <div className="bg-white p-5 rounded-xl border border-slate-200 mb-4 shadow-sm">
                     <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center">
                         <Ban className="w-4 h-4 mr-2 text-red-500" />
@@ -848,7 +1035,7 @@ const Profile: React.FC = () => {
                                 key={day}
                                 onClick={() => toggleDayExclusion(day)}
                                 className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
-                                    currentUser.excludedDays.includes(day)
+                                    (currentUser.excludedDays || []).includes(day)
                                     ? 'bg-red-100 text-red-800 border-red-200 font-bold shadow-inner'
                                     : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
                                 }`}
@@ -864,12 +1051,11 @@ const Profile: React.FC = () => {
                         <Ban className="w-4 h-4 mr-2 text-orange-500" />
                         Type de Créneau Exclu (Suggestions)
                     </h3>
-                    <p className="text-xs text-slate-400 mb-3">Ces exclusions empêchent l'algorithme de vous suggérer pour ces types de remplacements.</p>
                     <div className="flex flex-wrap gap-2">
                         <button 
                             onClick={() => toggleSlotTypeExclusion(SlotType.CONSULTATION)}
                              className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
-                                    currentUser.excludedSlotTypes?.includes(SlotType.CONSULTATION)
+                                    (currentUser.excludedSlotTypes || []).includes(SlotType.CONSULTATION)
                                     ? 'bg-orange-100 text-orange-800 border-orange-200 font-bold shadow-inner'
                                     : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
                                 }`}
@@ -879,7 +1065,7 @@ const Profile: React.FC = () => {
                         <button 
                             onClick={() => toggleSlotTypeExclusion(SlotType.RCP)}
                              className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
-                                    currentUser.excludedSlotTypes?.includes(SlotType.RCP)
+                                    (currentUser.excludedSlotTypes || []).includes(SlotType.RCP)
                                     ? 'bg-orange-100 text-orange-800 border-orange-200 font-bold shadow-inner'
                                     : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
                                 }`}
@@ -897,10 +1083,10 @@ const Profile: React.FC = () => {
                     <div className="space-y-2">
                         {activityDefinitions.map(act => (
                             <div key={act.id} className="flex items-center p-2 hover:bg-slate-50 rounded cursor-pointer" onClick={() => toggleActivityExclusion(act.id)}>
-                                <div className={`w-4 h-4 rounded border flex items-center justify-center mr-3 transition-colors ${currentUser.excludedActivities.includes(act.id) ? 'bg-red-500 border-red-500' : 'border-slate-300 bg-white'}`}>
-                                    {currentUser.excludedActivities.includes(act.id) && <Ban className="w-3 h-3 text-white" />}
+                                <div className={`w-4 h-4 rounded border flex items-center justify-center mr-3 transition-colors ${ (currentUser.excludedActivities || []).includes(act.id) ? 'bg-red-500 border-red-500' : 'border-slate-300 bg-white'}`}>
+                                    {(currentUser.excludedActivities || []).includes(act.id) && <Ban className="w-3 h-3 text-white" />}
                                 </div>
-                                <span className={`text-sm ${currentUser.excludedActivities.includes(act.id) ? 'text-red-700 font-medium line-through decoration-red-300' : 'text-slate-700'}`}>
+                                <span className={`text-sm ${(currentUser.excludedActivities || []).includes(act.id) ? 'text-red-700 font-medium line-through decoration-red-300' : 'text-slate-700'}`}>
                                     {act.name}
                                 </span>
                             </div>
